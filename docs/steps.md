@@ -16,7 +16,6 @@ Django REST Framework
   └── Audit Logging
           │
           ├── PostgreSQL
-          │
           └── Celery → Redis
 ```
 
@@ -32,11 +31,6 @@ pip install psycopg[binary]
 pip install python-dotenv
 pip install django-filter
 pip install djangorestframework-simplejwt
-```
-
-Then:
-
-```powershell
 pip freeze > requirements.txt
 ```
 
@@ -52,43 +46,11 @@ python manage.py startapp reconciliation
 python manage.py startapp audit
 ```
 
-I would initially skip separate `reports` and `organizations` apps. Add them only when the domain actually needs them.
-
-Your structure becomes:
-
-```text
-project/
-├── config/
-├── accounts/
-├── imports/
-├── transactions/
-├── reconciliation/
-├── audit/
-├── manage.py
-├── requirements.txt
-├── .env
-└── .gitignore
-```
+Skip separate `reports` and `organizations` apps until the domain actually needs them.
 
 ### Step 3: Configure settings
 
-Add the applications:
-
-```python
-INSTALLED_APPS = [
-    ...
-    "rest_framework",
-    "django_filters",
-
-    "accounts",
-    "imports",
-    "transactions",
-    "reconciliation",
-    "audit",
-]
-```
-
-Create `.env`:
+Add `rest_framework`, `django_filters`, and the five project apps to `INSTALLED_APPS`. Load these values from `.env` and keep placeholder-only values in `.env.example`:
 
 ```text
 DEBUG=True
@@ -102,25 +64,9 @@ DB_PORT=5432
 
 Make sure `.env` is ignored by Git.
 
-Create:
+**Checkpoint:** `python manage.py runserver` starts successfully.
 
-```text
-.env.example
-```
-
-containing only placeholder values.
-
-**Checkpoint:** Django starts successfully with:
-
-```powershell
-python manage.py runserver
-```
-
-Commit:
-
-```text
-chore: configure project structure and environment
-```
+Commit: `chore: configure project structure and environment`
 
 ---
 
@@ -128,1500 +74,838 @@ chore: configure project structure and environment
 
 ### Step 4: Create the PostgreSQL database
 
-Create:
-
-```text
-reconciliation
-```
-
-Configure Django to use PostgreSQL rather than SQLite.
-
-Run:
+Create the `reconciliation` database, configure Django to use it, then run:
 
 ```powershell
 python manage.py migrate
 ```
 
-Verify that Django's tables exist in PostgreSQL.
+Verify Django's tables exist in PostgreSQL. Delete `db.sqlite3` once PostgreSQL works.
 
-Delete `db.sqlite3` once PostgreSQL works.
+**Learn before moving on:** understand `ENGINE`, `HOST`, `PORT`, credentials, connections, and migrations.
 
-**Learn before moving on:** understand what `ENGINE`, `HOST`, `PORT`, database credentials, connections and migrations are doing.
-
-Commit:
-
-```text
-chore: configure PostgreSQL database
-```
+Commit: `chore: configure PostgreSQL database`
 
 ---
 
-# Phase 3 — Design the data model
+# How to use Phase 3 onward
 
-Do not immediately write models.
-
-First draw this:
-
-```text
-User
- │
- │ uploads
- ▼
-ImportBatch ─────── DataSource
- │
- │ contains
- ▼
-Transaction
-
-
-ImportBatch ──────┐
-                  │
-                  ▼
-          ReconciliationRun
-                  │
-                  ▼
-          ReconciliationResult
-             /           \
-            /             \
-Source Transaction     Target Transaction
-```
-
-### Step 5: Create `DataSource`
-
-Example concept:
-
-```text
-DataSource
------------
-id
-name
-code
-description
-is_active
-created_at
-updated_at
-```
-
-Example records:
-
-```text
-CORE_BANKING
-PAYMENT_GATEWAY
-SETTLEMENT_SYSTEM
-```
-
-Don't hardcode source names throughout the application.
-
-### Step 6: Create `ImportBatch`
-
-Conceptually:
-
-```text
-ImportBatch
------------
-id
-data_source
-file
-original_filename
-status
-
-total_rows
-valid_rows
-invalid_rows
-
-uploaded_by
-
-started_at
-completed_at
-created_at
-updated_at
-```
-
-Possible statuses:
-
-```text
-PENDING
-PROCESSING
-COMPLETED
-FAILED
-```
-
-Use Django `TextChoices` rather than random strings throughout the code.
-
-### Step 7: Create `Transaction`
-
-This is your most important table.
-
-Start with:
-
-```text
-Transaction
------------
-id
-batch
-external_id
-account_reference
-amount
-currency
-transaction_date
-status
-created_at
-```
-
-Think carefully about:
-
-```text
-Decimal vs float
-indexes
-nullability
-foreign keys
-uniqueness
-```
-
-Use `DecimalField` for money. Never `FloatField`.
-
-### Step 8: Create validation errors
-
-```text
-ImportValidationError
----------------------
-id
-batch
-row_number
-field
-raw_value
-error_code
-message
-created_at
-```
-
-This allows malformed input to be recorded rather than destroying the entire import.
-
-### Step 9: Create reconciliation models
-
-```text
-ReconciliationRun
------------------
-id
-source_batch
-target_batch
-status
-started_by
-started_at
-completed_at
-
-ReconciliationResult
---------------------
-id
-run
-source_transaction
-target_transaction
-status
-difference
-reason
-created_at
-```
-
-Statuses could include:
-
-```text
-MATCHED
-AMOUNT_MISMATCH
-MISSING_SOURCE
-MISSING_TARGET
-```
-
-Now:
+Complete one phase at a time. At every phase boundary run:
 
 ```powershell
-python manage.py makemigrations
-python manage.py migrate
+python manage.py check
+python manage.py test
+git status --short
 ```
 
-Then inspect the actual PostgreSQL schema.
+Do not continue until its **Done when** list passes. Commit each green phase.
 
-**Checkpoint:** you should be able to explain every FK, unique constraint and index.
+Before Phase 3, resolve one current-project inconsistency: both `accounts/` and `users/` exist, and `users` is installed. Pick one owner for user-related code. This guide keeps Django's built-in `User` and uses `accounts` for authentication endpoints. Remove the unused `users` app from `INSTALLED_APPS`, and delete it only after confirming it contains no work you need.
 
-Commit:
+# Phase 3 — Design and implement the data model
+
+Goal: represent imports, normalized transactions, and reconciliation results with database-enforced relationships.
+
+## Step 5: Draw the relationships
 
 ```text
-feat: add transaction and reconciliation data models
+User ──< ImportBatch >── DataSource
+              │
+              └──< Transaction
+
+ImportBatch (source) ──< ReconciliationRun >── ImportBatch (target)
+                                  │
+                                  └──< ReconciliationResult
+                                            ├── source_transaction
+                                            └── target_transaction
 ```
+
+Keep these decisions:
+
+- `DataSource` is an external system; `ImportBatch` is one uploaded file.
+- A transaction belongs to one batch.
+- `external_id` is unique within a batch, not globally.
+- Money uses `DecimalField`, never `FloatField`.
+- Protect historical references unless a child has no meaning without its parent.
+
+## Step 6: Add import models
+
+Put `DataSource` and `ImportBatch` in `imports/models.py`:
+
+```python
+from django.conf import settings
+from django.db import models
+
+
+class DataSource(models.Model):
+    name = models.CharField(max_length=100)
+    code = models.CharField(max_length=50, unique=True)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class ImportBatch(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PROCESSING = "PROCESSING", "Processing"
+        COMPLETED = "COMPLETED", "Completed"
+        FAILED = "FAILED", "Failed"
+
+    data_source = models.ForeignKey(
+        DataSource, on_delete=models.PROTECT, related_name="import_batches"
+    )
+    file = models.FileField(upload_to="imports/%Y/%m/%d/")
+    original_filename = models.CharField(max_length=255)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True
+    )
+    total_rows = models.PositiveIntegerField(default=0)
+    valid_rows = models.PositiveIntegerField(default=0)
+    invalid_rows = models.PositiveIntegerField(default=0)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="import_batches",
+    )
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.original_filename} ({self.status})"
+```
+
+Add local file settings to `config/settings.py`:
+
+```python
+MEDIA_URL = "media/"
+MEDIA_ROOT = BASE_DIR / "media"
+```
+
+Add `media/` to `.gitignore`; uploaded financial data must not be committed.
+
+## Step 7: Add `Transaction`
+
+Put this in `transactions/models.py`:
+
+```python
+from django.db import models
+
+
+class Transaction(models.Model):
+    batch = models.ForeignKey(
+        "imports.ImportBatch", on_delete=models.CASCADE, related_name="transactions"
+    )
+    external_id = models.CharField(max_length=100)
+    account_reference = models.CharField(max_length=100)
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    currency = models.CharField(max_length=3)
+    transaction_date = models.DateField()
+    status = models.CharField(max_length=30, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-transaction_date", "external_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["batch", "external_id"],
+                name="unique_transaction_per_batch",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="transaction_amount_positive",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["external_id"]),
+            models.Index(fields=["transaction_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.external_id} — {self.amount} {self.currency}"
+```
+
+`CASCADE` fits because transactions have no meaning without their batch. Do not offer casual batch deletion in the API.
+
+## Step 8: Store validation errors
+
+Append to `imports/models.py`:
+
+```python
+class ImportValidationError(models.Model):
+    batch = models.ForeignKey(
+        ImportBatch, on_delete=models.CASCADE, related_name="validation_errors"
+    )
+    row_number = models.PositiveIntegerField()
+    field = models.CharField(max_length=100, blank=True)
+    raw_value = models.TextField(blank=True)
+    error_code = models.CharField(max_length=50)
+    message = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["row_number", "id"]
+
+    def __str__(self):
+        return f"Row {self.row_number}: {self.error_code}"
+```
+
+One bad row may have several errors. Separate rows remain searchable and filterable; a JSON blob on the batch would not.
+
+## Step 9: Add reconciliation models
+
+Put these in `reconciliation/models.py`:
+
+```python
+from django.conf import settings
+from django.db import models
+
+
+class ReconciliationRun(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PROCESSING = "PROCESSING", "Processing"
+        COMPLETED = "COMPLETED", "Completed"
+        FAILED = "FAILED", "Failed"
+
+    source_batch = models.ForeignKey(
+        "imports.ImportBatch",
+        on_delete=models.PROTECT,
+        related_name="source_reconciliation_runs",
+    )
+    target_batch = models.ForeignKey(
+        "imports.ImportBatch",
+        on_delete=models.PROTECT,
+        related_name="target_reconciliation_runs",
+    )
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True
+    )
+    started_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="reconciliation_runs",
+    )
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(source_batch=models.F("target_batch")),
+                name="different_reconciliation_batches",
+            )
+        ]
+
+
+class ReconciliationResult(models.Model):
+    class Status(models.TextChoices):
+        MATCHED = "MATCHED", "Matched"
+        AMOUNT_MISMATCH = "AMOUNT_MISMATCH", "Amount mismatch"
+        CURRENCY_MISMATCH = "CURRENCY_MISMATCH", "Currency mismatch"
+        ACCOUNT_MISMATCH = "ACCOUNT_MISMATCH", "Account mismatch"
+        DATE_MISMATCH = "DATE_MISMATCH", "Date mismatch"
+        MISSING_SOURCE = "MISSING_SOURCE", "Missing source"
+        MISSING_TARGET = "MISSING_TARGET", "Missing target"
+
+    run = models.ForeignKey(
+        ReconciliationRun, on_delete=models.CASCADE, related_name="results"
+    )
+    source_transaction = models.ForeignKey(
+        "transactions.Transaction",
+        on_delete=models.PROTECT,
+        related_name="source_results",
+        null=True,
+        blank=True,
+    )
+    target_transaction = models.ForeignKey(
+        "transactions.Transaction",
+        on_delete=models.PROTECT,
+        related_name="target_results",
+        null=True,
+        blank=True,
+    )
+    status = models.CharField(max_length=30, choices=Status.choices, db_index=True)
+    difference = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True
+    )
+    reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "source_transaction"],
+                condition=models.Q(source_transaction__isnull=False),
+                name="unique_source_transaction_per_run",
+            ),
+            models.UniqueConstraint(
+                fields=["run", "target_transaction"],
+                condition=models.Q(target_transaction__isnull=False),
+                name="unique_target_transaction_per_run",
+            ),
+        ]
+```
+
+## Step 10: Create and inspect migrations
+
+```powershell
+python manage.py makemigrations imports transactions reconciliation
+python manage.py sqlmigrate transactions 0001
+python manage.py migrate
+python manage.py check
+```
+
+Use the actual migration number if it is not `0001`. Read the SQL and identify foreign keys, uniqueness, check constraints, and indexes. Add one model test proving duplicate IDs within a batch and non-positive amounts are rejected.
+
+**Done when:** migrations apply to a clean database; checks/tests pass; you can explain every `on_delete` choice.
+
+Commit: `feat: add import transaction and reconciliation models`
 
 ---
 
 # Phase 4 — Django Admin
 
-### Step 10: Configure Django Admin
+Goal: inspect backend data before building APIs.
 
-Before building APIs or React, make your data inspectable.
+## Step 11: Register each app's models
 
-Register:
-
-```text
-DataSource
-ImportBatch
-Transaction
-ImportValidationError
-ReconciliationRun
-ReconciliationResult
-```
-
-Add useful:
+Example for `imports/admin.py`:
 
 ```python
-list_display
-list_filter
-search_fields
-readonly_fields
+from django.contrib import admin
+
+from .models import DataSource, ImportBatch, ImportValidationError
+
+
+@admin.register(DataSource)
+class DataSourceAdmin(admin.ModelAdmin):
+    list_display = ("code", "name", "is_active", "created_at")
+    list_filter = ("is_active",)
+    search_fields = ("code", "name")
+
+
+@admin.register(ImportBatch)
+class ImportBatchAdmin(admin.ModelAdmin):
+    list_display = (
+        "id", "original_filename", "data_source", "status",
+        "valid_rows", "invalid_rows", "created_at",
+    )
+    list_filter = ("status", "data_source")
+    search_fields = ("original_filename",)
+    readonly_fields = ("created_at", "updated_at")
+    list_select_related = ("data_source", "uploaded_by")
+
+
+@admin.register(ImportValidationError)
+class ImportValidationErrorAdmin(admin.ModelAdmin):
+    list_display = ("batch", "row_number", "field", "error_code")
+    list_filter = ("error_code",)
+    search_fields = ("message", "raw_value")
 ```
 
-Create an admin:
+Apply the same pattern to transactions and reconciliation. Mark generated result fields read-only.
+
+## Step 12: Create initial records
 
 ```powershell
 python manage.py createsuperuser
+python manage.py runserver
 ```
 
-Open:
+At `/admin/`, create `Core Banking System / CORE_BANKING` and `Payment Gateway / PAYMENT_GATEWAY`.
 
-```text
-/admin/
-```
+**Done when:** every model is viewable, useful fields can be searched/filtered, and both sources exist.
 
-Create two sources manually:
-
-```text
-Core Banking System
-Payment Gateway
-```
-
-This gives you an immediate internal debugging interface.
-
-Commit:
-
-```text
-feat: configure administration interface
-```
+Commit: `feat: configure administration interface`
 
 ---
 
-# Phase 5 — Build the REST API
+# Phase 5 — Read-only REST API
 
-### Step 11: Learn serializers before generating everything
+Goal: expose data safely before accepting uploads or commands.
 
-Implement serializers for:
+## Step 13: Add serializers
 
-```text
-DataSource
-ImportBatch
-Transaction
-ReconciliationRun
-ReconciliationResult
+Create one `serializers.py` per owning app. Start with `ModelSerializer`; do not add a shared base class.
+
+```python
+# transactions/serializers.py
+from rest_framework import serializers
+from .models import Transaction
+
+
+class TransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Transaction
+        fields = "__all__"
+        read_only_fields = ("id", "created_at")
 ```
 
-Understand this flow:
+Add equivalents for `DataSource`, `ImportBatch`, validation errors, runs, and results. Prefer explicit field lists before exposing writes.
 
-```text
-HTTP JSON
-    ↓
-Serializer
-    ↓ validation
-Python values
-    ↓
-Model
-    ↓
-PostgreSQL
+## Step 14: Add viewsets and routes
+
+```python
+# transactions/views.py
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import filters, viewsets
+from .models import Transaction
+from .serializers import TransactionSerializer
+
+
+class TransactionViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Transaction.objects.select_related("batch", "batch__data_source")
+    serializer_class = TransactionSerializer
+    filter_backends = (DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter)
+    filterset_fields = ("batch", "status", "currency", "transaction_date")
+    search_fields = ("external_id", "account_reference")
+    ordering_fields = ("transaction_date", "amount", "created_at")
 ```
 
-and backwards:
+Register all viewsets with one router in `config/api_urls.py`, then include it at `/api/`.
 
-```text
-PostgreSQL
-    ↓
-Model
-    ↓
-Serializer
-    ↓
-JSON
+## Step 15: Configure pagination
+
+```python
+REST_FRAMEWORK = {
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 50,
+    "DEFAULT_FILTER_BACKENDS": [
+        "django_filters.rest_framework.DjangoFilterBackend",
+    ],
+}
 ```
 
-This is roughly where your Laravel API Resource/Form Request experience will help.
+Verify list/detail endpoints, pagination, `?currency=PKR`, `?search=TX100`, and `?ordering=-amount`. Test pagination, one filter, one search, 404, and POST returning 405.
 
-### Step 12: Build basic endpoints
+**Done when:** all lists are paginated and unsupported writes are unavailable.
 
-Start with:
-
-```text
-GET /api/data-sources/
-
-GET /api/imports/
-GET /api/imports/{id}/
-
-GET /api/transactions/
-GET /api/transactions/{id}/
-
-GET /api/reconciliations/
-GET /api/reconciliations/{id}/
-```
-
-Don't build file upload yet.
-
-### Step 13: Add pagination, filtering and searching
-
-For transactions:
-
-```http
-GET /api/transactions/?page=2
-GET /api/transactions/?status=SUCCESS
-GET /api/transactions/?currency=PKR
-GET /api/transactions/?external_id=TX100
-```
-
-Use `django-filter`.
-
-Do not fetch 100,000 transactions into one API response.
-
-Commit:
-
-```text
-feat: add transaction REST APIs
-```
+Commit: `feat: add read-only transaction APIs`
 
 ---
 
 # Phase 6 — Authentication and authorization
 
-### Step 14: Implement JWT
+Goal: authenticate with JWT and centralize role checks.
 
-Using SimpleJWT:
+## Step 16: Add JWT
 
-```text
-POST /api/auth/login/
-POST /api/auth/refresh/
-GET  /api/auth/me/
-```
-
-The login response provides:
-
-```json
-{
-  "access": "...",
-  "refresh": "..."
-}
-```
-
-### Step 15: Add roles
-
-Start simple:
+Configure `JWTAuthentication` and `IsAuthenticated` as DRF defaults. Add:
 
 ```text
-ADMIN
-ANALYST
-VIEWER
+POST /api/auth/login/    -> TokenObtainPairView
+POST /api/auth/refresh/  -> TokenRefreshView
+GET  /api/auth/me/       -> id, username/email, role
 ```
 
-Then implement permissions.
+## Step 17: Add roles
 
-For example:
+Keep Django's user model. Add an `accounts.Profile` with a one-to-one user and `TextChoices`: `ADMIN`, `ANALYST`, `VIEWER`. Create profiles explicitly; avoid signals until every creation path truly requires them.
+
+Create reusable `IsAdmin` and `IsAnalystOrAdmin` permissions. Reads use `IsAuthenticated`; uploads/reconciliation use analyst-or-admin; user management uses admin.
+
+Test:
 
 | Action | Admin | Analyst | Viewer |
 |---|---:|---:|---:|
-| View transactions | ✓ | ✓ | ✓ |
-| Upload files | ✓ | ✓ | ✗ |
-| Run reconciliation | ✓ | ✓ | ✗ |
-| Manage users | ✓ | ✗ | ✗ |
-| View audit logs | ✓ | ✓ | ✗ |
+| View data | Yes | Yes | Yes |
+| Upload | Yes | Yes | No |
+| Reconcile | Yes | Yes | No |
+| Manage users | Yes | No | No |
+| View audit | Yes | Yes | No |
 
-Don't put this logic into individual views repeatedly.
+**Done when:** anonymous users get 401, disallowed roles get 403, and refresh works.
 
-Create reusable DRF permission classes.
-
-Commit:
-
-```text
-feat: implement JWT authentication and role permissions
-```
+Commit: `feat: implement JWT authentication and role permissions`
 
 ---
 
-# Phase 7 — Build ETL
+# Phase 7 — Synchronous CSV ETL
 
-This is where the project becomes interesting.
+Goal: correctly import a small CSV before adding Celery.
 
-### Step 16: Install data-processing dependencies
+## Step 18: Create sample files
 
-Now install:
+Create `sample_data/core_transactions.csv`, `gateway_transactions.csv`, and `invalid_transactions.csv`. Start with this canonical schema:
 
-```powershell
-pip install pandas openpyxl
+```csv
+external_id,account_reference,amount,currency,transaction_date,status
+TX1001,ACC001,25000.00,PKR,2026-09-20,SUCCESS
 ```
 
-Update:
+Include duplicates, missing values, negative/zero amounts, invalid dates, whitespace, and bad currencies. Keep samples below 50 rows.
 
-```powershell
-pip freeze > requirements.txt
-```
+## Step 19: Implement the pipeline
 
-### Step 17: Create sample datasets
-
-Create:
-
-```text
-sample_data/
-├── core_transactions.csv
-├── gateway_transactions.csv
-├── invalid_transactions.csv
-└── large_transactions.csv
-```
-
-Start with 20–50 rows.
-
-Deliberately include:
-
-```text
-duplicates
-missing IDs
-negative amounts
-invalid dates
-different date formats
-whitespace
-missing accounts
-invalid currency
-amount mismatches
-```
-
-This is critical for testing.
-
-### Step 18: Build extraction
-
-Your import pipeline should conceptually have:
-
-```text
-extract()
-validate()
-transform()
-load()
-```
-
-Don't write one giant:
+Start with Python's `csv.DictReader`; add Pandas only after measurement. Create `imports/services/pipeline.py` with one public function:
 
 ```python
-def import_transactions(file):
-    # 300 lines
+process_import(batch) -> None
 ```
 
-Prefer components such as:
+It should:
 
-```text
-imports/
-    services/
-        extractor.py
-        validator.py
-        transformer.py
-        loader.py
-        pipeline.py
-```
+1. Set `PROCESSING` and `started_at`.
+2. Read with `utf-8-sig`.
+3. Validate headers once.
+4. Normalize and validate each row.
+5. Collect transactions and structured errors.
+6. `bulk_create` both inside `transaction.atomic()`.
+7. Update counts, status, and `completed_at`.
+8. On unexpected failure, mark `FAILED` and re-raise.
 
-Mental model:
+Use `Decimal`, `datetime.strptime`, `strip`, and `upper`. Never parse money through `float`.
 
-```text
-Extractor
-    ↓
-raw rows
+## Step 20: Validate rules
 
-Validator
-    ↓
-valid/invalid rows
+Require ID, account, amount, currency, and date. Amount must be decimal and positive. Initially support `PKR`, `USD`, and `EUR`. Accept only documented date formats. Reject duplicate IDs within the file/batch.
 
-Transformer
-    ↓
-normalized records
+Store `row_number`, `field`, `raw_value`, `error_code`, and `message` for each issue; continue processing other rows.
 
-Loader
-    ↓
-PostgreSQL
-```
+Test valid normalization, negative amount, invalid date, duplicate ID, and final batch counts/status.
 
-### Step 19: Build validation
+**Done when:** one direct service test imports valid rows and records all invalid ones with correct counts.
 
-Check things like:
-
-```text
-external_id required
-amount required
-amount > 0
-date valid
-currency supported
-account reference required
-duplicate transaction
-```
-
-Return structured errors:
-
-```json
-{
-    "row": 14,
-    "field": "amount",
-    "value": "-200",
-    "code": "INVALID_AMOUNT",
-    "message": "Amount must be greater than zero."
-}
-```
-
-Store those errors.
-
-### Step 20: Build transformation
-
-Convert dirty input:
-
-```text
-" tx001 "
-```
-
-into:
-
-```text
-TX001
-```
-
-Convert:
-
-```text
-"PKR 25,000"
-```
-
-into a proper decimal representation.
-
-Normalize dates.
-
-Be careful here: Pandas often pushes developers toward floats. **Don't let financial amounts silently become floating-point values.**
-
-### Step 21: Build loading
-
-Don't do:
-
-```python
-for row in rows:
-    Transaction.objects.create(...)
-```
-
-for huge imports.
-
-Learn and use:
-
-```python
-bulk_create()
-```
-
-Use database transactions where appropriate:
-
-```python
-transaction.atomic()
-```
-
-Now you have something meaningful to discuss in an interview:
-
-> I optimized batch ingestion by validating and transforming records before using bulk inserts rather than performing individual database writes.
-
-Commit:
-
-```text
-feat: implement transaction ETL pipeline
-```
+Commit: `feat: implement synchronous CSV import pipeline`
 
 ---
 
-# Phase 8 — File upload
+# Phase 8 — File upload API
 
-### Step 22: Build upload endpoint
+Goal: connect multipart upload to the tested pipeline.
 
-Create:
+## Step 21: Validate uploads
 
-```http
-POST /api/imports/
-```
+Create an upload serializer accepting `file` and `data_source`. Validate `.csv`, non-empty content, a configurable maximum size (for example 10 MB), and an active source. Save only the basename as `original_filename`; never trust it as a path.
 
-Multipart request:
+## Step 22: Create and process the batch
 
-```text
-file = transactions.csv
-data_source = 1
-```
-
-Flow:
+Implement `POST /api/imports/`:
 
 ```text
-HTTP upload
-    ↓
-validate extension/size
-    ↓
-create ImportBatch
-    ↓
-save file
-    ↓
-ETL pipeline
-    ↓
-update ImportBatch
+validate -> create PENDING batch -> process_import(batch) -> serialize result
 ```
 
-Response:
+Return 201 for success and 400 for input errors. Unexpected failures must leave the batch `FAILED` without exposing tracebacks. Add paginated `GET /api/imports/{id}/errors/`.
 
-```json
-{
-    "id": 42,
-    "status": "completed",
-    "total_rows": 1000,
-    "valid_rows": 987,
-    "invalid_rows": 13
-}
-```
+Test valid upload, invalid extension, oversize, viewer denial, and mixed rows.
 
-### Step 23: Add validation-error endpoint
+**Done when:** an analyst uploads a sample, sees counts/transactions/errors, and a viewer gets 403.
 
-```text
-GET /api/imports/42/errors/
-```
-
-Now users can investigate failed rows.
-
-Commit:
-
-```text
-feat: add transaction file import API
-```
+Commit: `feat: add transaction file import API`
 
 ---
 
 # Phase 9 — Reconciliation engine
 
-This should be the project's main business-logic feature.
+Goal: compare completed batches by `external_id` outside HTTP code.
 
-### Step 24: Define matching rules
+## Step 23: Define rules
 
-Start simple.
+1. Batches must be completed and different.
+2. Pair rows by normalized `external_id`.
+3. Source-only is `MISSING_TARGET`; target-only is `MISSING_SOURCE`.
+4. Compare amount, currency, account, then date.
+5. Equal pairs are `MATCHED`.
+6. Amount difference is `target.amount - source.amount`.
 
-Match using:
+If several fields differ, use the first status in that order and list all differences in `reason`.
 
-```text
-external_id
-```
+## Step 24: Implement the service
 
-Then compare:
-
-```text
-amount
-currency
-account
-date
-```
-
-Example:
-
-```text
-Source:
-TX001
-PKR 25,000
-
-Target:
-TX001
-PKR 25,000
-
-→ MATCHED
-```
-
-Another:
-
-```text
-Source:
-TX002
-PKR 12,000
-
-Target:
-TX002
-PKR 12,500
-
-→ AMOUNT_MISMATCH
-difference = 500
-```
-
-And:
-
-```text
-Source:
-TX003
-
-Target:
-nothing
-
-→ MISSING_TARGET
-```
-
-### Step 25: Keep reconciliation separate from HTTP
-
-Don't put reconciliation algorithms in:
+Create `reconciliation/services/engine.py`:
 
 ```python
-views.py
+reconcile(source_batch, target_batch, started_by) -> ReconciliationRun
 ```
 
-Instead:
+Use dictionaries keyed by ID for the first implementation, then `bulk_create` results in a transaction. Mark unexpected failures `FAILED`. Replace the in-memory approach only when Phase 17 proves it is necessary.
+
+## Step 25: Add endpoints
 
 ```text
-reconciliation/
-    services/
-        matcher.py
-        engine.py
-```
-
-Think:
-
-```python
-engine.reconcile(source_batch, target_batch)
-```
-
-The HTTP view should orchestrate the operation, not implement the algorithm.
-
-### Step 26: Add endpoint
-
-```http
 POST /api/reconciliations/
+GET  /api/reconciliations/
+GET  /api/reconciliations/{id}/
+GET  /api/reconciliations/{id}/results/?status=AMOUNT_MISMATCH
 ```
 
-Request:
+Test every result status, same/incomplete batch rejection, and viewer denial.
 
-```json
-{
-    "source_batch_id": 12,
-    "target_batch_id": 13
-}
-```
+**Done when:** result count equals the union of IDs and each transaction occurs at most once per run.
 
-Response:
-
-```json
-{
-    "id": 8,
-    "status": "completed",
-    "matched": 940,
-    "mismatched": 42,
-    "missing": 18
-}
-```
-
-Then:
-
-```text
-GET /api/reconciliations/8/results/
-```
-
-Commit:
-
-```text
-feat: implement transaction reconciliation engine
-```
+Commit: `feat: implement transaction reconciliation engine`
 
 ---
 
-# Phase 10 — Testing
+# Phase 10 — Consolidate testing
 
-Don't leave testing until the very end.
+Goal: protect behavior before adding infrastructure.
 
-Install:
+The Django test runner is sufficient. Do not install pytest unless you will use it consistently. Keep tests beside each app and split `tests.py` only when navigation becomes difficult.
+
+Prioritize database constraints, JWT/roles, CSV validation, state/count updates, all match outcomes, and API responses.
 
 ```powershell
-pip install pytest pytest-django factory-boy
+python manage.py test
+python manage.py check
 ```
 
-Organize tests roughly by:
+**Done when:** tests start from an empty database, need no manual seed data, and cover each reconciliation outcome and upload permission.
 
-```text
-tests/
-    test_models.py
-    test_api.py
-    test_permissions.py
-    test_pipeline.py
-    test_validator.py
-    test_transformer.py
-    test_reconciliation.py
-```
-
-Prioritize business behavior.
-
-For example:
-
-```text
-test_valid_transaction_is_imported
-
-test_negative_amount_is_rejected
-
-test_duplicate_transaction_is_rejected
-
-test_invalid_date_is_reported
-
-test_identical_transactions_match
-
-test_amount_difference_is_detected
-
-test_missing_transaction_is_detected
-
-test_viewer_cannot_upload
-
-test_analyst_can_reconcile
-```
-
-This matters more than chasing an arbitrary coverage percentage.
+Commit: `test: cover imports permissions and reconciliation`
 
 ---
 
 # Phase 11 — Background processing
 
-Only introduce Celery **after synchronous ETL works**.
+Goal: move proven long work out of HTTP.
 
-### Step 27: Install Celery + Redis
+## Step 26: Add Celery/Redis
 
 ```powershell
 pip install celery redis
+pip freeze > requirements.txt
 ```
 
-The architecture changes from:
+Add `config/celery.py`, import it from `config/__init__.py`, and configure broker/result URLs via environment variables. Keep tasks thin: fetch a batch by ID and call the existing service.
 
-```text
-POST /imports
-    ↓
-Django
-    ↓
-process 100k rows
-    ↓
-wait...
-    ↓
-response
+## Step 27: Return asynchronous responses
+
+Upload now validates, creates `PENDING`, calls `task.delay(batch.id)`, and returns `202 Accepted`. Poll `GET /api/imports/{id}/`. Move reconciliation to Celery only if it is also slow.
+
+Run locally:
+
+```powershell
+redis-server
+celery -A config worker -l INFO --pool=solo
+python manage.py runserver
 ```
 
-to:
+`--pool=solo` is the simple Windows development option; use Linux workers in production.
 
-```text
-POST /imports
-    ↓
-Django
-    ↓
-ImportBatch(PENDING)
-    ↓
-Celery queue
-    ↓
-202 Accepted
+**Done when:** HTTP returns immediately and the worker transitions `PENDING -> PROCESSING -> COMPLETED/FAILED`.
 
-
-Celery Worker
-    ↓
-PROCESSING
-    ↓
-ETL
-    ↓
-COMPLETED
-```
-
-### Step 28: Return asynchronous responses
-
-Upload:
-
-```http
-POST /api/imports/
-```
-
-returns:
-
-```json
-{
-    "id": 42,
-    "status": "pending"
-}
-```
-
-Then frontend checks:
-
-```http
-GET /api/imports/42/
-```
-
-Eventually:
-
-```json
-{
-    "id": 42,
-    "status": "completed",
-    "total_rows": 100000,
-    "valid_rows": 99782,
-    "invalid_rows": 218
-}
-```
-
-Do the same for reconciliation if it becomes expensive.
-
-This gives you a good answer to:
-
-> Why did you use Celery?
-
-Not:
-
-> Because Celery is popular.
-
-But:
-
-> Importing large datasets is long-running work. Keeping it inside the HTTP request ties up web workers and can cause timeouts, so I moved the processing into asynchronous workers.
-
-That distinction is important.
+Commit: `feat: process imports in background workers`
 
 ---
 
 # Phase 12 — Audit logging
 
-### Step 29: Build audit logs
+Goal: append-only history for important actions.
 
-Track important actions:
+Add `AuditLog` fields: nullable `user`, `action`, `entity_type`, `entity_id`, `metadata = JSONField(default=dict)`, and `created_at`. Start with `LOGIN`, `UPLOAD_DATASET`, `START_RECONCILIATION`, and `COMPLETE_RECONCILIATION`.
 
-```text
-LOGIN
-UPLOAD_DATASET
-START_RECONCILIATION
-COMPLETE_RECONCILIATION
-RESOLVE_DISCREPANCY
-```
+Create one explicit `record_event(...)` service; do not hide actor-aware business events in signals. Expose only read-only, paginated endpoints filtered by user/action/date. Admin and analyst can read; viewer cannot.
 
-Store:
+**Done when:** successful upload/reconciliation actions create rows and API mutations return 405.
 
-```text
-user
-action
-entity_type
-entity_id
-metadata
-timestamp
-```
-
-Expose:
-
-```text
-GET /api/audit-logs/
-```
-
-Don't expose normal update/delete endpoints for audit entries.
+Commit: `feat: add append-only audit logging`
 
 ---
 
 # Phase 13 — Dashboard API
 
-Don't make React calculate business metrics from thousands of transactions.
+Goal: aggregate server-side rather than downloading all transactions.
 
-Create:
+Create `GET /api/dashboard/summary/` returning transaction/import counts, matched/mismatched/missing totals, match rate, and recent imports. Use `Count` and filtered aggregates. Define match rate as matched divided by all results times 100; return `0.00` when empty.
 
-```text
-GET /api/dashboard/summary/
-```
+**Done when:** empty data returns zeros, seeded totals are correct, and query count stays constant as rows increase.
 
-Example:
-
-```json
-{
-    "transactions": 124521,
-    "imports": 28,
-    "reconciliation": {
-        "matched": 121403,
-        "mismatched": 2841,
-        "missing": 277
-    },
-    "match_rate": 97.49
-}
-```
-
-Let PostgreSQL/Django aggregate this.
-
-This gives you an opportunity to learn:
-
-```text
-Count
-Sum
-Avg
-annotate()
-aggregate()
-grouping
-indexes
-query optimization
-```
+Commit: `feat: add dashboard summary API`
 
 ---
 
 # Phase 14 — React frontend
 
-Only now start the frontend.
-
-Create:
+Goal: a functional operations UI backed by real APIs.
 
 ```powershell
 npm create vite@latest frontend -- --template react-ts
+cd frontend
+npm install
+npm install react-router-dom @tanstack/react-query
 ```
 
-Use:
+Use native `fetch`; add Axios only if it removes meaningful repetition. Build `/login`, `/dashboard`, `/imports`, `/imports/new`, `/imports/:id`, `/transactions`, `/reconciliations`, `/reconciliations/:id`, and `/audit-logs` in that order.
 
-```text
-React
-TypeScript
-React Router
-TanStack Query
-Axios/fetch
-```
+Start with tables, forms, loading/empty/error states, keyboard access, and responsive laptop/tablet layout. Avoid a component library until repeated patterns justify one.
 
-Build screens in this order:
+**Done when:** every page uses real API data and is usable without a mouse.
 
-```text
-Login
-  ↓
-Dashboard
-  ↓
-Imports
-  ↓
-Upload
-  ↓
-Transactions
-  ↓
-Reconciliations
-  ↓
-Reconciliation Details
-  ↓
-Validation Errors
-  ↓
-Audit Logs
-```
-
-Do not spend two days choosing button colors.
-
-The frontend exists primarily to demonstrate **frontend/backend integration**.
+Commit: `feat: add React operations interface`
 
 ---
 
-# Phase 15 — Make the frontend genuinely integrate with the backend
+# Phase 15 — Frontend/backend integration
 
-Implement an API layer:
+Goal: complete auth, upload, polling, filtering, and errors.
 
-```text
-React
- │
- ├── authApi
- ├── importApi
- ├── transactionApi
- └── reconciliationApi
-       │
-       ▼
-      DRF
-```
+Create one fetch wrapper that prefixes `VITE_API_URL`, sends access tokens, avoids setting JSON headers on `FormData`, attempts one refresh on 401, logs out on refresh failure, and parses errors consistently.
 
-Handle:
+For a portfolio SPA, `sessionStorage` is acceptable if documented; production should prefer secure HttpOnly cookies. Use TanStack Query `refetchInterval` for pending jobs and stop on terminal status/unmount.
 
-```text
-JWT storage
-Authorization header
-401 responses
-refresh tokens
-loading
-errors
-pagination
-filters
-background-job polling
-```
+Verify: login, upload/poll, transaction filters, reconcile/poll, results, logout, and helpful 400/401/403/404/network errors.
 
-For example:
+**Done when:** a fresh browser can complete the full workflow without hardcoded data.
 
-```text
-Upload CSV
-   ↓
-POST /api/imports/
-   ↓
-{ id: 42, status: "pending" }
-   ↓
-React polls /api/imports/42/
-   ↓
-processing
-   ↓
-processing
-   ↓
-completed
-   ↓
-refresh dashboard
-```
-
-That is much more impressive than static dashboard cards.
+Commit: `feat: integrate frontend with reconciliation API`
 
 ---
 
 # Phase 16 — API documentation
 
-Add OpenAPI/Swagger.
-
-For example, use `drf-spectacular`.
-
-You want:
-
-```text
-/api/schema/
-/api/docs/
+```powershell
+pip install drf-spectacular
+pip freeze > requirements.txt
 ```
 
-Document:
+Expose `/api/schema/` and `/api/docs/`. Annotate upload, dashboard, and reconciliation creation when inference is insufficient. Document auth, pagination, filters, errors, and 202 jobs.
 
-```text
-request schemas
-response schemas
-authentication
-errors
-filters
-pagination
-```
+**Done when:** the schema validates, Swagger loads, and every public endpoint has the right method/body.
 
-Someone reviewing your GitHub should be able to understand the backend without reading every Python file.
+Commit: `docs: publish OpenAPI schema and Swagger UI`
 
 ---
 
-# Phase 17 — Performance work
+# Phase 17 — Performance measurement
 
-Now create a larger dataset:
+Generate 100,000 fictional rows with Python's `csv` module; ignore the generated file. Measure import time, rows/second, peak memory, reconciliation time, and list/dashboard query counts.
 
-```text
-100,000–500,000 transactions
-```
+Use `QuerySet.explain()` and apply only evidenced fixes: `select_related`, `prefetch_related`, batch-sized `bulk_create`, `iterator`, or a justified index. Record before/after numbers in README.
 
-Measure performance.
+**Done when:** at least one repeatable measurement justifies each claimed optimization.
 
-Check queries using:
-
-```python
-print(queryset.explain())
-```
-
-Learn when to use:
-
-```text
-select_related()
-prefetch_related()
-values()
-only()
-indexes
-bulk_create()
-iterator()
-```
-
-Do not add indexes randomly.
-
-For example, if reconciliation repeatedly searches:
-
-```sql
-WHERE external_id = ?
-```
-
-then `external_id` becomes an obvious indexing candidate.
-
-This phase gives you concrete performance decisions to discuss.
+Commit: `perf: optimize measured import and query bottlenecks`
 
 ---
 
 # Phase 18 — Docker
 
-Once the application works normally, containerize it.
-
-Your local architecture:
-
-```text
-docker-compose
-│
-├── backend
-│     Django
-│
-├── worker
-│     Celery
-│
-├── postgres
-│
-├── redis
-│
-└── frontend
-      React
-```
-
-A developer should eventually be able to clone your repository and run something close to:
+Add `Dockerfile`, `compose.yaml`, and `.dockerignore`. Compose `web`, `worker`, PostgreSQL, and Redis; web/worker share an image with different commands. Use volumes for database/media and environment variables for secrets.
 
 ```powershell
-docker compose up --build
+docker compose build
+docker compose up
+docker compose exec web python manage.py migrate
+docker compose exec web python manage.py test
 ```
+
+Skip local Nginx unless hosting requires it.
+
+**Done when:** a clean clone starts, migrates, tests, uploads, and runs a worker task.
+
+Commit: `chore: add reproducible Docker environment`
 
 ---
 
-# Phase 19 — CI
+# Phase 19 — Continuous integration
 
-Add GitHub Actions:
+Create one GitHub Actions workflow with PostgreSQL/Redis services. Check out, set up Python, install requirements, run `check`, `makemigrations --check --dry-run`, and tests; if `frontend/` exists, set up Node and build it.
 
-```text
-Push / PR
-   ↓
-Install Python
-   ↓
-Install dependencies
-   ↓
-Run linting
-   ↓
-Run migrations/checks
-   ↓
-Run pytest
-   ↓
-Build frontend
-```
+**Done when:** clean checkout passes and tests or missing migrations make CI fail.
 
-If tests fail:
-
-```text
-❌ CI fails
-```
-
-This demonstrates basic professional development workflow.
+Commit: `ci: run backend tests and frontend build`
 
 ---
 
 # Phase 20 — Deployment
 
-Deploy something like:
-
-```text
-React
-  ↓
-Vercel
-
-Django
-  ↓
-Render / Railway
-  │
-  ├── PostgreSQL
-  ├── Redis
-  └── Celery worker
-```
-
-Configure production:
-
-```text
-DEBUG=False
-SECRET_KEY
-DATABASE_URL
-CORS_ALLOWED_ORIGINS
-ALLOWED_HOSTS
-```
-
-Never commit production credentials.
-
----
-
-# Phase 21 — Create demo data
-
-A recruiter shouldn't need to upload files just to understand the application.
-
-Create a seed command such as:
+Deploy React static hosting, Django web, Celery worker, managed PostgreSQL/Redis, and persistent/object file storage. Production settings need environment-driven secrets, `DEBUG=False`, hosts/origins, HTTPS cookies, database, Redis, and storage.
 
 ```powershell
-python manage.py seed_demo
+python manage.py check --deploy
 ```
 
-Generate:
+Run migrations as a release step. Verify login, upload/worker, reconciliation, dashboard, docs, and logout with fictional data.
 
-```text
-2 data sources
-5 import batches
-10,000 transactions
-several reconciliation runs
-matched transactions
-amount mismatches
-missing transactions
-validation failures
-demo users
-```
+**Done when:** the public demo works in a fresh browser and exposes no secrets, real data, debug pages, or local-only URLs.
 
-Provide read-only demo credentials if appropriate.
+Commit: `chore: configure production deployment`
 
 ---
 
-# Phase 22 — Polish GitHub
+# Phase 21 — Demo data
 
-Your README should have this structure:
+Create an idempotent `python manage.py seed_demo` command using `get_or_create`/`update_or_create`. Add three roles/users, two sources, two completed batches, matched/mismatched/missing examples, one completed run, and audit events. Use obviously fictional data.
 
-```text
-# Transaction Reconciliation Platform
+**Done when:** running twice succeeds without logical duplicates and immediately populates the dashboard.
 
-Screenshot
-
-Live Demo
-
-## Problem
-
-## Solution
-
-## Architecture
-
-## Features
-
-## Tech Stack
-
-## Data Pipeline
-
-## Reconciliation Engine
-
-## Database Design
-
-## API
-
-## Background Processing
-
-## Security
-
-## Testing
-
-## Local Development
-
-## Docker
-
-## Deployment
-
-## Design Decisions
-
-## Future Improvements
-```
-
-Especially write the **Design Decisions** section yourself.
-
-For example:
-
-> Celery was introduced after implementing synchronous ingestion because large imports should not occupy HTTP workers.
-
-and:
-
-> PostgreSQL Decimal/Numeric types are used for monetary values rather than floating-point representations.
-
-Those explanations show engineering understanding.
+Commit: `feat: add repeatable demo data`
 
 ---
 
-# Phase 23 — Prepare yourself to defend the project
+# Phase 22 — README and repository polish
 
-This is as important as finishing it.
+README order: summary; live demo/credentials; screenshots; problem/workflow; Mermaid architecture; features; stack; data model; local setup; environment; web/worker/frontend commands; tests; API docs; measured performance; decisions/trade-offs; deployment; known limitations.
 
-For every major technology, answer **why**.
+Test every command from a clean clone/container. Remove generated datasets, uploads, local databases, secrets, dead screenshots, and unused dependencies.
 
-You should be able to explain:
+**Done when:** another developer can run it without asking for missing instructions.
 
-| Question | You should understand |
-|---|---|
-| Why Django? | batteries-included enterprise framework |
-| Why DRF? | API abstraction |
-| Why PostgreSQL? | relational integrity, SQL, transactions |
-| Why Celery? | long-running asynchronous jobs |
-| Why Redis? | message broker/cache |
-| Why React? | interactive operations frontend |
-| Why JWT? | API authentication tradeoffs |
-| Why `Decimal`? | financial precision |
-| Why indexes? | lookup/query performance |
-| Why bulk inserts? | ingestion performance |
-| Why transactions? | atomicity |
-| Why ETL stages? | separation and testability |
-| Why service classes? | domain logic outside HTTP |
-| Why audit logs? | traceability |
-| Why Docker? | reproducible environments |
+Commit: `docs: complete project documentation`
 
-Also understand the downsides. For example, JWT isn't automatically "better" than Django sessions.
+---
+
+# Phase 23 — Prepare to defend the project
+
+Be ready to explain model separation, per-batch uniqueness, decimal money, deletion rules, 202 responses, partial row failures, duplicate prevention, missing matches, measured optimization, and scaling to millions of rows or multiple organizations.
+
+Practice this five-minute demo:
+
+1. Log in as analyst.
+2. Upload two fixtures.
+3. Show background progress and validation errors.
+4. Reconcile them.
+5. Filter/open a mismatch.
+6. Show dashboard and audit history.
+7. Show API docs and green CI.
+
+**Done when:** the demo is repeatable and you can explain each major model, state transition, and security boundary.
 
 ---
 
 # Recommended Git progression
 
-Don't build the whole project and then make one commit.
-
-Your history could look like:
-
 ```text
-chore: initialize Django project
-
-chore: configure PostgreSQL
-
-feat: add transaction data models
-
-feat: configure Django admin
-
-feat: add transaction REST API
-
-feat: implement JWT authentication
-
-feat: add role-based permissions
-
-feat: implement CSV transaction extraction
-
-feat: add transaction validation pipeline
-
-feat: implement transaction transformations
-
-feat: implement bulk transaction loading
-
-feat: add file import API
-
-feat: implement reconciliation engine
-
-test: add reconciliation tests
-
-feat: add asynchronous import processing
-
-feat: add audit logging
-
-feat: add dashboard statistics API
-
-feat: add React dashboard
-
-feat: add transaction management interface
-
-feat: add reconciliation interface
-
-docs: add OpenAPI documentation
-
-chore: dockerize application
-
-ci: add GitHub Actions workflow
-
-docs: add project documentation
+feat: add import transaction and reconciliation models
+feat: configure administration interface
+feat: add read-only transaction APIs
+feat: implement JWT authentication and role permissions
+feat: implement synchronous CSV import pipeline
+feat: add transaction file import API
+feat: implement transaction reconciliation engine
+test: cover imports permissions and reconciliation
+feat: process imports in background workers
+feat: add append-only audit logging
+feat: add dashboard summary API
+feat: add React operations interface
+feat: integrate frontend with reconciliation API
+docs: publish OpenAPI schema and Swagger UI
+perf: optimize measured import and query bottlenecks
+chore: add reproducible Docker environment
+ci: run backend tests and frontend build
+chore: configure production deployment
+feat: add repeatable demo data
+docs: complete project documentation
 ```
 
-This makes your GitHub activity look like an actual engineering project rather than an AI-generated code dump.
+# Immediate next milestone
 
-## Your immediate next milestone
-
-Don't think about all 23 phases right now. Your **first milestone** should be:
-
-```text
-Django
-   ↓
-PostgreSQL
-   ↓
-Data models
-   ↓
-Django Admin
-   ↓
-DRF
-   ↓
-Basic API
-```
-
-So from your already-created project, do these next:
-
-1. Install DRF, PostgreSQL driver, `django-filter`, SimpleJWT and environment configuration.
-2. Create `accounts`, `imports`, `transactions`, `reconciliation`, and `audit`.
-3. Connect PostgreSQL.
-4. Design the database schema **before coding the models**.
-5. Implement `DataSource`, `ImportBatch`, `Transaction`, `ImportValidationError`, `ReconciliationRun`, and `ReconciliationResult`.
-6. Run migrations.
-7. Register everything with Django Admin.
-8. Insert some dummy data.
-9. Build read-only DRF endpoints.
-10. Verify them using Postman/Bruno.
-
-Only after that should you touch the ETL pipeline.
-
-The project should progress conceptually as **data model → API → business logic → asynchronous processing → UI → infrastructure**, rather than having an AI agent scaffold the entire stack at once. That ordering will force you to learn the parts of Django, SQL, ETL, APIs and architecture that this particular role is likely to test.
+Do only Phase 3 now: resolve `accounts` versus `users`, implement the six models, make/inspect migrations, add the two constraint tests, run checks/tests, and commit. Do not begin serializers, uploads, Celery, or React until it is green.
