@@ -44,8 +44,7 @@ INSTALLED_APPS = [
     "imports",
     "transactions",
     "reconciliation",
-    "audit",
-    "users"
+    "audit"
 ]
 
 MIDDLEWARE = [
