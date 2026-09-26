@@ -5,6 +5,7 @@ from imports.views import (
     ImportBatchViewSet,
     ImportValidationErrorViewSet,
 )
+from audit.views import AuditLogViewSet
 from reconciliation.views import ReconciliationResultViewSet, ReconciliationRunViewSet
 from transactions.views import TransactionViewSet
 
@@ -16,6 +17,7 @@ router.register("transactions", TransactionViewSet, basename="transaction")
 router.register(
     "reconciliation-runs", ReconciliationRunViewSet, basename="reconciliation-run"
 )
+router.register("audit-logs", AuditLogViewSet, basename="audit-log")
 router.register(
     "reconciliation-results",
     ReconciliationResultViewSet,

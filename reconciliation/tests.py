@@ -12,6 +12,7 @@ from transactions.models import Transaction
 
 from .models import ReconciliationResult
 from .services.engine import reconcile
+from audit.models import AuditLog
 
 
 class ReconciliationTests(TestCase):
@@ -55,6 +56,9 @@ class ReconciliationTests(TestCase):
         self.assertSetEqual(
             set(ReconciliationResult.objects.filter(run=run).values_list("status", flat=True)),
             {"MATCHED", "AMOUNT_MISMATCH", "MISSING_SOURCE", "MISSING_TARGET"},
+        )
+        self.assertEqual(
+            AuditLog.objects.filter(entity_id=str(run.pk)).count(), 2
         )
 
     def test_api_rejects_viewer_and_allows_analyst(self):

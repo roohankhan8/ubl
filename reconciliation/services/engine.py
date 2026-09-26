@@ -1,5 +1,7 @@
 from django.db import transaction
 from django.utils import timezone
+from audit.models import AuditLog
+from audit.services import record_event
 
 from ..models import ReconciliationResult, ReconciliationRun
 
@@ -17,6 +19,7 @@ def reconcile(source_batch, target_batch, started_by):
         status=ReconciliationRun.Status.PROCESSING,
         started_at=timezone.now(),
     )
+    record_event(user=started_by, action=AuditLog.Action.START_RECONCILIATION, entity=run)
     try:
         source = {row.external_id: row for row in source_batch.transactions.all()}
         target = {row.external_id: row for row in target_batch.transactions.all()}
@@ -59,6 +62,7 @@ def reconcile(source_batch, target_batch, started_by):
             run.status = ReconciliationRun.Status.COMPLETED
             run.completed_at = timezone.now()
             run.save(update_fields=("status", "completed_at"))
+        record_event(user=started_by, action=AuditLog.Action.COMPLETE_RECONCILIATION, entity=run)
         return run
     except Exception:
         run.status = ReconciliationRun.Status.FAILED

@@ -8,6 +8,7 @@ from accounts.models import Profile
 from .models import DataSource, ImportBatch, ImportValidationError
 from .services.pipeline import process_import
 from transactions.models import Transaction
+from audit.models import AuditLog
 
 
 class ImportPipelineTests(TestCase):
@@ -60,6 +61,7 @@ class ImportPipelineTests(TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.data["status"], ImportBatch.Status.PENDING)
         delay.assert_called_once_with(response.data["id"])
+        self.assertTrue(AuditLog.objects.filter(action=AuditLog.Action.UPLOAD_DATASET).exists())
 
     def test_upload_rejects_non_csv_and_viewer(self):
         client = APIClient()

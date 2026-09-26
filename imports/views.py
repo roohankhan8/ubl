@@ -13,6 +13,8 @@ from .serializers import (
     ImportUploadSerializer,
 )
 from .tasks import process_import_batch
+from audit.models import AuditLog
+from audit.services import record_event
 
 
 class DataSourceViewSet(viewsets.ReadOnlyModelViewSet):
@@ -51,6 +53,7 @@ class ImportBatchViewSet(
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         batch = serializer.save()
+        record_event(user=request.user, action=AuditLog.Action.UPLOAD_DATASET, entity=batch)
         process_import_batch.delay(batch.pk)
         return Response(ImportBatchSerializer(batch).data, status=status.HTTP_202_ACCEPTED)
 
