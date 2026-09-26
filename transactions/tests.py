@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.test import TestCase
+from rest_framework.test import APIClient
 
 from imports.models import DataSource, ImportBatch
 
@@ -39,3 +40,14 @@ class TransactionConstraintTests(TestCase):
     def test_amount_must_be_positive(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
             Transaction.objects.create(**(self.values | {"amount": Decimal("0.00")}))
+
+    def test_transaction_api_is_paginated_and_read_only(self):
+        Transaction.objects.create(**self.values)
+        client = APIClient()
+
+        response = client.get("/api/transactions/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(client.post("/api/transactions/", {}).status_code, 405)
