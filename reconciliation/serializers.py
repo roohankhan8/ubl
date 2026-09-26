@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import ReconciliationResult, ReconciliationRun
+from imports.models import ImportBatch
 
 
 class ReconciliationRunSerializer(serializers.ModelSerializer):
@@ -21,3 +22,8 @@ class ReconciliationResultSerializer(serializers.ModelSerializer):
             "id", "run", "source_transaction", "target_transaction", "status",
             "difference", "reason", "created_at",
         )
+
+
+class ReconciliationCreateSerializer(serializers.Serializer):
+    source_batch = serializers.PrimaryKeyRelatedField(queryset=ImportBatch.objects.all())
+    target_batch = serializers.PrimaryKeyRelatedField(queryset=ImportBatch.objects.all())
