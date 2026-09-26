@@ -1,6 +1,7 @@
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.contrib.auth import get_user_model
+from unittest.mock import patch
 from rest_framework.test import APIClient
 
 from accounts.models import Profile
@@ -37,7 +38,8 @@ class ImportPipelineTests(TestCase):
         self.assertEqual(Transaction.objects.get().external_id, "TX1001")
         self.assertEqual(ImportValidationError.objects.count(), 4)
 
-    def test_upload_requires_analyst_and_processes_csv(self):
+    @patch("imports.views.process_import_batch.delay")
+    def test_upload_requires_analyst_and_queues_csv(self, delay):
         user = self.batch.uploaded_by
         Profile.objects.create(user=user, role=Profile.Role.ANALYST)
         client = APIClient()
@@ -55,8 +57,9 @@ class ImportPipelineTests(TestCase):
             format="multipart",
         )
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.data["valid_rows"], 1)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.data["status"], ImportBatch.Status.PENDING)
+        delay.assert_called_once_with(response.data["id"])
 
     def test_upload_rejects_non_csv_and_viewer(self):
         client = APIClient()

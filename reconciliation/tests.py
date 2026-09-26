@@ -63,8 +63,30 @@ class ReconciliationTests(TestCase):
         response = client.post("/api/reconciliation-runs/", {"source_batch": self.source_batch.pk, "target_batch": self.target_batch.pk})
         self.assertEqual(response.status_code, 201)
 
+        viewer = get_user_model().objects.create_user(username="viewer")
+        client.force_authenticate(user=viewer)
+        response = client.post("/api/reconciliation-runs/", {"source_batch": self.source_batch.pk, "target_batch": self.target_batch.pk})
+        self.assertEqual(response.status_code, 403)
+
     def test_same_batch_is_rejected(self):
         with self.assertRaises(ValueError):
             reconcile(self.source_batch, self.source_batch, self.user)
+
+    def test_incomplete_batch_is_rejected(self):
+        self.target_batch.status = ImportBatch.Status.PENDING
+        self.target_batch.save(update_fields=("status",))
+        with self.assertRaises(ValueError):
+            reconcile(self.source_batch, self.target_batch, self.user)
+
+    def test_field_priority_and_amount_difference_are_recorded(self):
+        self.row(self.source_batch, "TX1", "10.00", "SOURCE")
+        self.row(self.target_batch, "TX1", "12.00", "TARGET", date(2026, 9, 21))
+
+        run = reconcile(self.source_batch, self.target_batch, self.user)
+        result = run.results.get()
+
+        self.assertEqual(result.status, ReconciliationResult.Status.AMOUNT_MISMATCH)
+        self.assertEqual(result.difference, Decimal("2.00"))
+        self.assertEqual(result.reason, "amount, account, date")
 
 # Create your tests here.

@@ -12,7 +12,7 @@ from .serializers import (
     ImportValidationErrorSerializer,
     ImportUploadSerializer,
 )
-from .services.pipeline import process_import
+from .tasks import process_import_batch
 
 
 class DataSourceViewSet(viewsets.ReadOnlyModelViewSet):
@@ -51,14 +51,8 @@ class ImportBatchViewSet(
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         batch = serializer.save()
-        try:
-            process_import(batch)
-        except Exception:
-            return Response(
-                {"detail": "The import could not be processed."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-        return Response(ImportBatchSerializer(batch).data, status=status.HTTP_201_CREATED)
+        process_import_batch.delay(batch.pk)
+        return Response(ImportBatchSerializer(batch).data, status=status.HTTP_202_ACCEPTED)
 
     @action(detail=True, methods=("get",), url_path="errors")
     def errors(self, request, pk=None):
