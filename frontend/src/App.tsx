@@ -1,122 +1,71 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useState } from "react";
+import type { FormEvent } from "react";
+import { BrowserRouter, Navigate, NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import "./App.css";
 
-function App() {
-  const [count, setCount] = useState(0)
+type User = { username: string; email: string; role: string | null };
+type Summary = { transactions: number; imports: number; reconciliation_runs: number; matched: number; mismatched: number; missing: number; match_rate: string; recent_imports: Array<{ id: number; original_filename: string; status: string; created_at: string }> };
+type Page<T> = { count: number; results: T[] };
+type ImportBatch = { id: number; original_filename: string; status: string; total_rows: number; valid_rows: number; invalid_rows: number; created_at: string; data_source: number };
+type DataSource = { id: number; name: string; code: string };
+type Transaction = { id: number; external_id: string; account_reference: string; amount: string; currency: string; transaction_date: string; status: string; batch: number };
+type Run = { id: number; source_batch: number; target_batch: number; status: string; created_at: string };
+type Result = { id: number; status: string; source_transaction: number | null; target_transaction: number | null; difference: string | null; reason: string };
+type AuditLog = { id: number; action: string; entity_type: string; entity_id: string; user: number | null; created_at: string; metadata: Record<string, unknown> };
+const apiBase = import.meta.env.VITE_API_URL || "/api";
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = sessionStorage.getItem("access_token");
+  let headers = options.body instanceof FormData ? { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers } : { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers };
+  let response = await fetch(`${apiBase}${path}`, { ...options, headers });
+  if (response.status === 401 && !path.startsWith("/auth/")) {
+    const refresh = sessionStorage.getItem("refresh_token");
+    if (refresh) {
+      const refreshed = await fetch(`${apiBase}/auth/refresh/`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh }) });
+      if (refreshed.ok) { const tokens = await refreshed.json() as { access: string }; sessionStorage.setItem("access_token", tokens.access); headers = { ...headers, Authorization: `Bearer ${tokens.access}` }; response = await fetch(`${apiBase}${path}`, { ...options, headers }); }
+    }
+  }
+  if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail || "Request failed");
+  return response.json();
 }
 
-export default App
+function Login({ onLogin }: { onLogin: (user: User) => void }) {
+  const navigate = useNavigate(); const [username, setUsername] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState(""); const [loading, setLoading] = useState(false);
+  async function submit(event: FormEvent) { event.preventDefault(); setError(""); setLoading(true); try { const tokens = await api<{ access: string; refresh: string }>("/auth/login/", { method: "POST", body: JSON.stringify({ username, password }) }); sessionStorage.setItem("access_token", tokens.access); sessionStorage.setItem("refresh_token", tokens.refresh); const user = await api<User>("/auth/me/"); onLogin(user); navigate("/dashboard"); } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to sign in"); } finally { setLoading(false); } }
+  return <main className="auth-page"><section className="auth-card"><div className="brand-mark">UB</div><p className="eyebrow">Transaction control center</p><h1>Welcome back</h1><p className="muted">Sign in to monitor imports and reconciliation health.</p><form onSubmit={submit} className="stack"><label>Username<input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required /></label><label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary-button" disabled={loading}>{loading ? "Signing in…" : "Sign in"}</button></form></section></main>;
+}
+
+function Shell({ user, onLogout }: { user: User; onLogout: () => void }) { return <div className="app-shell"><aside className="sidebar"><div className="brand"><span className="brand-mark small">UB</span><span>UBL Recon</span></div><nav aria-label="Main navigation"><NavLink to="/dashboard">Overview</NavLink><NavLink to="/imports">Imports</NavLink><NavLink to="/transactions">Transactions</NavLink><NavLink to="/reconciliations">Reconciliations</NavLink><NavLink to="/audit-logs">Audit log</NavLink></nav><div className="sidebar-footer"><span className="avatar">{user.username.slice(0, 1).toUpperCase()}</span><div><strong>{user.username}</strong><small>{user.role || "User"}</small></div><button className="link-button" onClick={onLogout}>Sign out</button></div></aside><main className="content"><Routes><Route path="/dashboard" element={<Dashboard />} /><Route path="/imports" element={<ImportsPage />} /><Route path="/transactions" element={<TransactionsPage />} /><Route path="/reconciliations" element={<ReconciliationsPage />} /><Route path="/reconciliations/:id" element={<ReconciliationDetail />} /><Route path="/audit-logs" element={<AuditLogsPage />} /><Route path="/login" element={<Navigate to="/dashboard" replace />} /><Route path="*" element={<ComingSoon />} /></Routes></main></div>; }
+
+function Dashboard() { const [summary, setSummary] = useState<Summary | null>(null); const [error, setError] = useState(""); useEffect(() => { api<Summary>("/dashboard/summary/").then(setSummary).catch((cause) => setError(cause instanceof Error ? cause.message : "Unable to load dashboard")); }, []); if (error) return <div className="state error-state"><h1>Dashboard unavailable</h1><p>{error}</p></div>; if (!summary) return <div className="state"><div className="spinner" aria-label="Loading" /><p>Loading dashboard…</p></div>; const cards = [["Transactions", summary.transactions, "Across all imported batches"], ["Imports", summary.imports, "Files received"], ["Reconciliation runs", summary.reconciliation_runs, "Comparison jobs"], ["Match rate", `${summary.match_rate}%`, `${summary.matched} matched records`]]; return <div className="dashboard"><header className="page-header"><div><p className="eyebrow">Operations overview</p><h1>Good morning</h1><p className="muted">A clear view of your reconciliation workspace.</p></div><NavLink className="primary-button" to="/imports">New import</NavLink></header><section className="metric-grid" aria-label="Summary metrics">{cards.map(([label, value, hint]) => <article className="metric-card" key={String(label)}><span>{label}</span><strong>{value}</strong><small>{hint}</small></article>)}</section><section className="dashboard-grid"><article className="panel"><div className="panel-heading"><div><p className="eyebrow">Latest activity</p><h2>Recent imports</h2></div><NavLink to="/imports">View all</NavLink></div>{summary.recent_imports.length ? <div className="import-list">{summary.recent_imports.map((item) => <div className="import-row" key={item.id}><div className="file-icon">CSV</div><div><strong>{item.original_filename}</strong><small>{new Date(item.created_at).toLocaleDateString()}</small></div><span className={`status status-${item.status.toLowerCase()}`}>{item.status}</span></div>)}</div> : <div className="empty-state"><strong>No imports yet</strong><p>Upload a CSV to start building your reconciliation history.</p></div>}</article><article className="panel accent-panel"><p className="eyebrow">Result health</p><h2>Reconciliation outcomes</h2><div className="outcome"><span className="dot matched" />Matched <strong>{summary.matched}</strong></div><div className="outcome"><span className="dot warning" />Mismatched <strong>{summary.mismatched}</strong></div><div className="outcome"><span className="dot missing" />Missing records <strong>{summary.missing}</strong></div></article></section></div>; }
+function ImportsPage() {
+  const [imports, setImports] = useState<ImportBatch[]>([]); const [sources, setSources] = useState<DataSource[]>([]); const [file, setFile] = useState<File | null>(null); const [source, setSource] = useState(""); const [loading, setLoading] = useState(true); const [submitting, setSubmitting] = useState(false); const [message, setMessage] = useState(""); const [error, setError] = useState("");
+  const load = () => { setLoading(true); Promise.all([api<Page<ImportBatch>>("/imports/"), api<Page<DataSource>>("/data-sources/?is_active=true")]).then(([batchPage, sourcePage]) => { setImports(batchPage.results); setSources(sourcePage.results); if (!source && sourcePage.results[0]) setSource(String(sourcePage.results[0].id)); }).catch((cause) => setError(cause instanceof Error ? cause.message : "Unable to load imports")).finally(() => setLoading(false)); };
+  useEffect(load, []);
+  async function upload(event: FormEvent) { event.preventDefault(); const form = event.currentTarget as HTMLFormElement; if (!file || !source) return; setSubmitting(true); setMessage(""); setError(""); const body = new FormData(); body.append("file", file); body.append("data_source", source); try { await api<ImportBatch>("/imports/", { method: "POST", body }); setMessage("Import queued. The worker will process it shortly."); setFile(null); form.reset(); load(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Upload failed"); } finally { setSubmitting(false); } }
+  return <div className="dashboard"><header className="page-header"><div><p className="eyebrow">Data intake</p><h1>Imports</h1><p className="muted">Upload a CSV and track its validation status.</p></div></header><section className="panel upload-panel"><div><p className="eyebrow">New import</p><h2>Upload transaction file</h2></div><form className="upload-form" onSubmit={upload}><label>Data source<select value={source} onChange={(e) => setSource(e.target.value)} required><option value="">Select a source</option>{sources.map((item) => <option value={item.id} key={item.id}>{item.name} · {item.code}</option>)}</select></label><label>CSV file<input type="file" accept=".csv,text/csv" onChange={(e) => setFile(e.target.files?.[0] || null)} required /></label><button className="primary-button" disabled={submitting || !sources.length}>{submitting ? "Queueing…" : "Queue import"}</button></form>{message && <p className="success-message" role="status">{message}</p>}{error && <p className="form-error" role="alert">{error}</p>}</section><section className="panel"><div className="panel-heading"><div><p className="eyebrow">History</p><h2>Import batches</h2></div><button className="secondary-button" onClick={load}>Refresh</button></div>{loading ? <div className="empty-state">Loading imports…</div> : imports.length ? <div className="table-wrap"><table><thead><tr><th>File</th><th>Source</th><th>Status</th><th>Rows</th><th>Created</th></tr></thead><tbody>{imports.map((item) => <tr key={item.id}><td><strong>{item.original_filename}</strong></td><td>{sources.find((itemSource) => itemSource.id === item.data_source)?.name || `Source #${item.data_source}`}</td><td><span className={`status status-${item.status.toLowerCase()}`}>{item.status}</span></td><td>{item.total_rows ? `${item.valid_rows}/${item.total_rows} valid` : "—"}</td><td>{new Date(item.created_at).toLocaleDateString()}</td></tr>)}</tbody></table></div> : <div className="empty-state"><strong>No import batches</strong><p>Upload your first transaction CSV above.</p></div>}</section></div>;
+}
+function TransactionsPage() {
+  const [items, setItems] = useState<Transaction[]>([]); const [count, setCount] = useState(0); const [page, setPage] = useState(1); const [search, setSearch] = useState(""); const [currency, setCurrency] = useState(""); const [status, setStatus] = useState(""); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
+  useEffect(() => { const query = new URLSearchParams({ page: String(page), ...(search ? { search } : {}), ...(currency ? { currency } : {}), ...(status ? { status } : {}) }); setLoading(true); api<Page<Transaction>>(`/transactions/?${query}`).then((result) => { setItems(result.results); setCount(result.count); }).catch((cause) => setError(cause instanceof Error ? cause.message : "Unable to load transactions")).finally(() => setLoading(false)); }, [page, search, currency, status]);
+  function filter(setter: (value: string) => void, value: string) { setPage(1); setter(value); }
+  return <div className="dashboard"><header className="page-header"><div><p className="eyebrow">Normalized records</p><h1>Transactions</h1><p className="muted">Search and inspect imported financial activity.</p></div></header><section className="panel"><div className="filter-bar"><label className="search-field">Search<input value={search} onChange={(e) => filter(setSearch, e.target.value)} placeholder="ID or account reference" /></label><label>Currency<select value={currency} onChange={(e) => filter(setCurrency, e.target.value)}><option value="">All currencies</option><option>PKR</option><option>USD</option><option>EUR</option></select></label><label>Status<select value={status} onChange={(e) => filter(setStatus, e.target.value)}><option value="">All statuses</option><option value="SUCCESS">Success</option><option value="FAILED">Failed</option></select></label></div>{error ? <p className="form-error" role="alert">{error}</p> : loading ? <div className="empty-state">Loading transactions…</div> : items.length ? <><div className="table-wrap"><table><thead><tr><th>External ID</th><th>Account</th><th>Amount</th><th>Currency</th><th>Date</th><th>Status</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><strong>{item.external_id}</strong></td><td>{item.account_reference}</td><td>{Number(item.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td><td>{item.currency}</td><td>{new Date(item.transaction_date).toLocaleDateString()}</td><td><span className="status status-completed">{item.status || "—"}</span></td></tr>)}</tbody></table></div><div className="pagination"><span>{count} transaction{count === 1 ? "" : "s"}</span><div><button className="secondary-button" disabled={page === 1} onClick={() => setPage(page - 1)}>Previous</button><span>Page {page}</span><button className="secondary-button" disabled={items.length < 50} onClick={() => setPage(page + 1)}>Next</button></div></div></> : <div className="empty-state"><strong>No matching transactions</strong><p>Try clearing a filter or upload a transaction CSV.</p></div>}</section></div>;
+}
+function ReconciliationsPage() { const [runs, setRuns] = useState<Run[]>([]); const [batches, setBatches] = useState<ImportBatch[]>([]); const [source, setSource] = useState(""); const [target, setTarget] = useState(""); const [loading, setLoading] = useState(true); const [submitting, setSubmitting] = useState(false); const [error, setError] = useState(""); const [message, setMessage] = useState("");
+  const load = () => { setLoading(true); Promise.all([api<Page<Run>>("/reconciliation-runs/"), api<Page<ImportBatch>>("/imports/?status=COMPLETED")]).then(([runPage, batchPage]) => { setRuns(runPage.results); setBatches(batchPage.results); }).catch((cause) => setError(cause instanceof Error ? cause.message : "Unable to load reconciliations")).finally(() => setLoading(false)); }; useEffect(load, []);
+  async function createRun(event: FormEvent) { event.preventDefault(); setSubmitting(true); setError(""); setMessage(""); try { await api<Run>("/reconciliation-runs/", { method: "POST", body: JSON.stringify({ source_batch: Number(source), target_batch: Number(target) }) }); setMessage("Reconciliation started."); setSource(""); setTarget(""); load(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to start reconciliation"); } finally { setSubmitting(false); } }
+  return <div className="dashboard"><header className="page-header"><div><p className="eyebrow">Comparison workspace</p><h1>Reconciliations</h1><p className="muted">Compare completed source and target batches.</p></div></header><section className="panel upload-panel"><p className="eyebrow">New run</p><h2>Compare two completed batches</h2><form className="upload-form" onSubmit={createRun}><label>Source batch<select value={source} onChange={(e) => setSource(e.target.value)} required><option value="">Select source</option>{batches.map((item) => <option key={item.id} value={item.id}>#{item.id} · {item.original_filename}</option>)}</select></label><label>Target batch<select value={target} onChange={(e) => setTarget(e.target.value)} required><option value="">Select target</option>{batches.map((item) => <option key={item.id} value={item.id}>#{item.id} · {item.original_filename}</option>)}</select></label><button className="primary-button" disabled={submitting || batches.length < 2}>{submitting ? "Starting…" : "Start reconciliation"}</button></form>{message && <p className="success-message" role="status">{message}</p>}{error && <p className="form-error" role="alert">{error}</p>}</section><section className="panel"><div className="panel-heading"><div><p className="eyebrow">History</p><h2>Reconciliation runs</h2></div><button className="secondary-button" onClick={load}>Refresh</button></div>{loading ? <div className="empty-state">Loading runs…</div> : runs.length ? <div className="table-wrap"><table><thead><tr><th>Run</th><th>Source</th><th>Target</th><th>Status</th><th>Created</th><th /></tr></thead><tbody>{runs.map((run) => <tr key={run.id}><td><strong>#{run.id}</strong></td><td>Batch #{run.source_batch}</td><td>Batch #{run.target_batch}</td><td><span className={`status status-${run.status.toLowerCase()}`}>{run.status}</span></td><td>{new Date(run.created_at).toLocaleDateString()}</td><td><NavLink className="table-link" to={`/reconciliations/${run.id}`}>View results</NavLink></td></tr>)}</tbody></table></div> : <div className="empty-state"><strong>No reconciliation runs</strong><p>Complete two imports, then compare them here.</p></div>}</section></div>; }
+function ReconciliationDetail() { const { id } = useParams(); const [results, setResults] = useState<Result[]>([]); const [status, setStatus] = useState(""); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); useEffect(() => { const query = status ? `?status=${status}` : ""; setLoading(true); api<Page<Result>>(`/reconciliation-runs/${id}/results/${query}`).then((result) => setResults(result.results)).catch((cause) => setError(cause instanceof Error ? cause.message : "Unable to load results")).finally(() => setLoading(false)); }, [id, status]); return <div className="dashboard"><header className="page-header"><div><NavLink className="back-link" to="/reconciliations">← Back to reconciliations</NavLink><p className="eyebrow">Run detail</p><h1>Run #{id}</h1><p className="muted">Review every matched, mismatched, and missing transaction.</p></div></header><section className="panel"><div className="filter-bar"><label>Status<select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All outcomes</option><option value="MATCHED">Matched</option><option value="AMOUNT_MISMATCH">Amount mismatch</option><option value="CURRENCY_MISMATCH">Currency mismatch</option><option value="ACCOUNT_MISMATCH">Account mismatch</option><option value="DATE_MISMATCH">Date mismatch</option><option value="MISSING_SOURCE">Missing source</option><option value="MISSING_TARGET">Missing target</option></select></label></div>{error ? <p className="form-error">{error}</p> : loading ? <div className="empty-state">Loading results…</div> : results.length ? <div className="table-wrap"><table><thead><tr><th>Status</th><th>Source transaction</th><th>Target transaction</th><th>Difference</th><th>Reason</th></tr></thead><tbody>{results.map((result) => <tr key={result.id}><td><span className={`status status-${result.status.toLowerCase()}`}>{result.status.replaceAll("_", " ")}</span></td><td>{result.source_transaction ? `#${result.source_transaction}` : "—"}</td><td>{result.target_transaction ? `#${result.target_transaction}` : "—"}</td><td>{result.difference || "—"}</td><td>{result.reason || "No differences"}</td></tr>)}</tbody></table></div> : <div className="empty-state">No results for this filter.</div>}</section></div>; }
+function AuditLogsPage() { const [logs, setLogs] = useState<AuditLog[]>([]); const [action, setAction] = useState(""); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); useEffect(() => { const query = action ? `?action=${action}` : ""; setLoading(true); api<Page<AuditLog>>(`/audit-logs/${query}`).then((result) => setLogs(result.results)).catch((cause) => setError(cause instanceof Error ? cause.message : "Unable to load audit log")).finally(() => setLoading(false)); }, [action]); return <div className="dashboard"><header className="page-header"><div><p className="eyebrow">Accountability</p><h1>Audit log</h1><p className="muted">A read-only history of important operations.</p></div></header><section className="panel"><div className="filter-bar"><label>Action<select value={action} onChange={(e) => setAction(e.target.value)}><option value="">All actions</option><option value="UPLOAD_DATASET">Upload dataset</option><option value="START_RECONCILIATION">Start reconciliation</option><option value="COMPLETE_RECONCILIATION">Complete reconciliation</option></select></label></div>{error ? <p className="form-error">{error}</p> : loading ? <div className="empty-state">Loading audit events…</div> : logs.length ? <div className="table-wrap"><table><thead><tr><th>Action</th><th>Entity</th><th>User</th><th>Time</th></tr></thead><tbody>{logs.map((log) => <tr key={log.id}><td><span className="status status-completed">{log.action.replaceAll("_", " ")}</span></td><td>{log.entity_type} #{log.entity_id}</td><td>{log.user ? `User #${log.user}` : "System"}</td><td>{new Date(log.created_at).toLocaleString()}</td></tr>)}</tbody></table></div> : <div className="empty-state"><strong>No audit events</strong><p>Important operations will appear here.</p></div>}</section></div>; }
+function ComingSoon() { return <div className="state"><p className="eyebrow">Next workspace</p><h1>Coming next</h1><p className="muted">This view will be connected to the backend in the next frontend increment.</p></div>; }
+export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+  useEffect(() => {
+    if (!sessionStorage.getItem("access_token")) { setCheckingSession(false); return; }
+    api<User>("/auth/me/").then(setUser).catch(() => sessionStorage.clear()).finally(() => setCheckingSession(false));
+  }, []);
+  const logout = () => { sessionStorage.clear(); setUser(null); };
+  if (checkingSession) return <div className="state"><div className="spinner" aria-label="Checking session" /><p>Restoring session…</p></div>;
+  return <BrowserRouter>{user ? <Shell user={user} onLogout={logout} /> : <Routes><Route path="/login" element={<Login onLogin={setUser} />} /><Route path="*" element={<Navigate to="/login" replace />} /></Routes>}</BrowserRouter>;
+}
