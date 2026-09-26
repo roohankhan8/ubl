@@ -6,6 +6,8 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from accounts.models import Profile
+
 from imports.models import DataSource, ImportBatch
 
 from .models import Transaction
@@ -44,6 +46,7 @@ class TransactionConstraintTests(TestCase):
     def test_transaction_api_is_paginated_and_read_only(self):
         Transaction.objects.create(**self.values)
         client = APIClient()
+        client.force_authenticate(user=self.batch.uploaded_by)
 
         response = client.get("/api/transactions/")
 
@@ -51,3 +54,17 @@ class TransactionConstraintTests(TestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(len(response.data["results"]), 1)
         self.assertEqual(client.post("/api/transactions/", {}).status_code, 405)
+
+    def test_transaction_api_requires_authentication(self):
+        response = APIClient().get("/api/transactions/")
+        self.assertEqual(response.status_code, 401)
+
+    def test_me_returns_profile_role(self):
+        Profile.objects.create(user_id=self.batch.uploaded_by_id, role=Profile.Role.ANALYST)
+        client = APIClient()
+        client.force_authenticate(user=self.batch.uploaded_by)
+
+        response = client.get("/api/auth/me/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["role"], Profile.Role.ANALYST)
