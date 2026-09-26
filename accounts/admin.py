@@ -1,3 +1,3 @@
 from django.contrib import admin
 
-# Register your models here.
+# Account profile administration will be added with the roles phase.

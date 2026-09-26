@@ -1,3 +1,3 @@
 from django.contrib import admin
 
-# Register your models here.
+# Audit models will be registered when the audit phase adds them.
