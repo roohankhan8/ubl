@@ -19,6 +19,9 @@ from django.contrib import admin
 from django.urls import include, path
 from config.dashboard import DashboardSummaryView
 
+admin.site.site_header = "Ledgerline administration"
+admin.site.site_title = "Ledgerline"
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("config.api_urls")),
